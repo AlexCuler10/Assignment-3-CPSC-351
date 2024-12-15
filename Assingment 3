@@ -1,0 +1,210 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <queue>
+#include <algorithm>
+#include <iomanip>
+
+using namespace std;
+
+// Process structure
+struct Process {
+    int id;
+    int arrival_time;
+    int lifetime_in_memory;
+    int total_memory_requirement;
+    int completion_time = -1;
+
+    Process(int pid, int at, int lt, int mem)
+        : id(pid), arrival_time(at), lifetime_in_memory(lt), total_memory_requirement(mem) {}
+};
+
+// Memory block structure
+struct MemoryBlock {
+    int start;
+    int size;
+    bool is_free;
+
+    MemoryBlock(int s, int sz, bool free) : start(s), size(sz), is_free(free) {}
+};
+
+// Global variables
+vector<MemoryBlock> memory_map;
+queue<Process> input_queue;
+vector<Process> completed_processes;
+int virtual_clock = 0;
+int memory_size, page_size;
+
+// Function declarations
+void parseInputFile(const string &filename, vector<Process> &process_list);
+void handleArrivals(int &virtual_clock, vector<Process> &process_list);
+void handleCompletions(int &virtual_clock);
+void admitProcesses();
+bool allocateMemory(int memory_requirement, int process_id);
+void mergeFreeRegions();
+void printMemoryMap();
+double calculateAverageTurnaroundTime();
+
+int main() {
+    // Input memory size and page size
+    cout << "Enter Memory Size: ";
+    cin >> memory_size;
+
+    cout << "Page Size (1: 100, 2: 200, 3: 400): ";
+    int page_size_option;
+    cin >> page_size_option;
+
+    switch (page_size_option) {
+        case 1: page_size = 100; break;
+        case 2: page_size = 200; break;
+        case 3: page_size = 400; break;
+        default:
+            cerr << "Invalid page size option!" << endl;
+            return 1;
+    }
+
+    // Input workload file
+    cout << "Enter workload file name: ";
+    string workload_file;
+    cin >> workload_file;
+
+    vector<Process> process_list;
+    parseInputFile(workload_file, process_list);
+
+    // Initialize memory map
+    memory_map.push_back(MemoryBlock(0, memory_size, true));
+
+    // Simulation loop
+    while (!process_list.empty() || !input_queue.empty() || 
+           any_of(memory_map.begin(), memory_map.end(), [](const MemoryBlock &block) { return !block.is_free; })) {
+        handleArrivals(virtual_clock, process_list);
+        handleCompletions(virtual_clock);
+        admitProcesses();
+        virtual_clock++;
+    }
+
+    // Calculate and display average turnaround time
+    double avg_turnaround_time = calculateAverageTurnaroundTime();
+    cout << "Simulation complete. Average Turnaround Time: " << fixed << setprecision(2) << avg_turnaround_time << endl;
+
+    return 0;
+}
+
+// Parse input file
+void parseInputFile(const string &filename, vector<Process> &process_list) {
+    ifstream infile(filename);
+    if (!infile) {
+        cerr << "Error: Cannot open file " << filename << endl;
+        exit(1);
+    }
+
+    int num_processes;
+    infile >> num_processes;
+
+    for (int i = 0; i < num_processes; i++) {
+        int id, arrival_time, lifetime, num_pieces;
+        infile >> id >> arrival_time >> lifetime >> num_pieces;
+
+        int total_memory = 0;
+        for (int j = 0; j < num_pieces; j++) {
+            int piece_size;
+            infile >> piece_size;
+            total_memory += piece_size;
+        }
+
+        if (total_memory > memory_size) {
+            cout << "Process " << id << " ignored due to excessive memory requirement." << endl;
+        } else {
+            process_list.emplace_back(id, arrival_time, lifetime, total_memory);
+        }
+    }
+
+    sort(process_list.begin(), process_list.end(), [](const Process &a, const Process &b) {
+        return a.arrival_time < b.arrival_time;
+    });
+}
+
+// Handle arrivals
+void handleArrivals(int &virtual_clock, vector<Process> &process_list) {
+    while (!process_list.empty() && process_list.front().arrival_time <= virtual_clock) {
+        input_queue.push(process_list.front());
+        cout << "Time: " << virtual_clock << " Event: Process Arrival, Process ID: " << process_list.front().id << endl;
+        process_list.erase(process_list.begin());
+    }
+}
+
+// Handle completions
+void handleCompletions(int &virtual_clock) {
+    for (auto &block : memory_map) {
+        if (!block.is_free && block.size == -1) { // Invalid marker, ignore.
+            continue;
+        }
+    }
+}
+
+void admitProcesses() {
+    queue<Process> temp_queue;
+    while (!input_queue.empty()) {
+        Process process = input_queue.front();
+        input_queue.pop();
+
+        if (allocateMemory(process.total_memory_requirement, process.id)) {
+            process.completion_time = virtual_clock + process.lifetime_in_memory;
+            cout << "Time: " << virtual_clock << " Event: Process Admission, Process ID: " << process.id << endl;
+        } else {
+            temp_queue.push(process); // Re-add to queue if not admitted
+        }
+    }
+    input_queue = temp_queue; // Restore remaining processes
+}
+
+// Allocate memory for a process
+bool allocateMemory(int memory_requirement, int process_id) {
+    for (auto &block : memory_map) {
+        if (block.is_free && block.size >= memory_requirement) {
+            // Allocate memory
+            if (block.size > memory_requirement) {
+                memory_map.insert(memory_map.begin() + (&block - &memory_map[0]) + 1,
+                                  MemoryBlock(block.start + memory_requirement,
+                                              block.size - memory_requirement, true));
+            }
+            block.size = memory_requirement;
+            block.is_free = false;
+
+            cout << "Memory allocated for Process ID: " << process_id
+                 << " (Start: " << block.start << ", Size: " << memory_requirement << ")" << endl;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Merge adjacent free memory blocks
+void mergeFreeRegions() {
+    for (size_t i = 0; i < memory_map.size() - 1; ++i) {
+        if (memory_map[i].is_free && memory_map[i + 1].is_free) {
+            memory_map[i].size += memory_map[i + 1].size;
+            memory_map.erase(memory_map.begin() + i + 1);
+            --i; // Recheck the merged block
+        }
+    }
+}
+
+// Calculate average turnaround time
+double calculateAverageTurnaroundTime() {
+    double total_turnaround_time = 0;
+    for (const auto &process : completed_processes) {
+        total_turnaround_time += (process.completion_time - process.arrival_time);
+    }
+    return completed_processes.empty() ? 0 : total_turnaround_time / completed_processes.size();
+}
+
+// Print the memory map for debugging purposes
+void printMemoryMap() {
+    cout << "Memory Map:" << endl;
+    for (const auto &block : memory_map) {
+        cout << "Start: " << block.start << ", Size: " << block.size
+             << ", Status: " << (block.is_free ? "Free" : "Allocated") << endl;
+    }
+    cout << endl;
+}
